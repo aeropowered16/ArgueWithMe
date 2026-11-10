@@ -1,0 +1,158 @@
+diff --git a/src/argue.ts b/src/argue.ts
+new file mode 100644
+index 0000000..e6a4da4
+--- /dev/null
++++ b/src/argue.ts
+@@ -0,0 +1,83 @@
++// src/argue.ts
++// The /argue command of the REPL:
++//   /argue <your defense>   Dispute the assistant's last answer. Your short
++//                           reply is expanded by a separate, stateless call
++//                           (no history, no tools, no persona) into a full
++//                           argument, which is then sent as your next message.
++import chalk from "chalk";
++
++/** What /argue needs from the REPL. */
++export interface ArgueHost {
++  /** The current conversation (same shape the REPL keeps in .context.json). */
++  getMessages(): { role: string; content: any }[];
++  /** One stateless call: no history, no tools, no system prompt. Returns the text. */
++  oneShot(prompt: string): Promise<string>;
++}
++
++/** Plain text of a message; tool-call / tool-result parts are ignored. */
++export function textOf(content: any): string {
++  if (typeof content === "string") return content;
++  if (Array.isArray(content)) {
++    return content
++      .filter((p) => p?.type === "text" && typeof p.text === "string")
++      .map((p) => p.text)
++      .join("\n");
++  }
++  return "";
++}
++
++/** The last question the user asked and the assistant's text answer to it. */
++export function lastExchange(
++  messages: { role: string; content: any }[]
++): { question: string; answer: string } | null {
++  let answer = "";
++  for (let i = messages.length - 1; i >= 0; i--) {
++    const text = textOf(messages[i].content).trim();
++    if (!text) continue;
++    if (!answer && messages[i].role === "assistant") answer = text;
++    else if (answer && messages[i].role === "user") return { question: text, answer };
++  }
++  return null;
++}
++
++export function buildArguePrompt(question: string, answer: string, argument: string): string {
++  return (
++    `This is the initial question the user said: ${question}\n\n` +
++    `The assistant said: ${answer}\n\n` +
++    `The user wants to argue that: ${argument}\n\n` +
++    `Expand this argument to make sure the assistant knows what the user is implying. ` +
++    `Do not add facts the user did not state or imply. ` +
++    `Only return the expanded response; don't use any personality traits.`
++  );
++}
++
++/** Runs /argue. Returns the message to send to the model, or null if nothing should be sent. */
++export async function runArgue(args: string, host: ArgueHost): Promise<string | null> {
++  const argument = args.trim().replace(/^(["'])([\s\S]*)\1$/, "$2").trim();
++  if (!argument) {
++    console.log(chalk.bold("\nUsage:"));
++    console.log(`  ${chalk.cyan('/argue "But it does."')}   Dispute the assistant's last answer; your reply is expanded into a full argument first\n`);
++    return null;
++  }
++
++  const last = lastExchange(host.getMessages());
++  if (!last) {
++    console.log(chalk.yellow("Nothing to argue with yet. Ask something first."));
++    return null;
++  }
++
++  try {
++    console.log(chalk.gray("Expanding your argument..."));
++    const expanded = (await host.oneShot(buildArguePrompt(last.question, last.answer, argument))).trim();
++    if (!expanded) {
++      console.log(chalk.yellow("The expander returned nothing; sending your text as-is."));
++      return argument;
++    }
++    console.log(chalk.gray("\nSending:"));
++    console.log(chalk.dim(expanded) + "\n");
++    return expanded;
++  } catch (err: any) {
++    console.error(chalk.red(`/argue failed: ${err?.message ?? String(err)}`));
++    return null;
++  }
++}
+diff --git a/src/repl.ts b/src/repl.ts
+index 30b041e..b51dd28 100644
+--- a/src/repl.ts
++++ b/src/repl.ts
+@@ -19,6 +19,7 @@ import { executeCustomApi } from "./providers/custom.js";
+ import { getTools, getToolOrigins } from "./tools/index.js";
+ import { closeMcpClients } from "./tools/mcp.js";
+ import { runEdit, type EditHost } from "./edit.js";
++import { runArgue, type ArgueHost } from "./argue.js";
+ import { createInterrupt, isAbortError } from "./Guards.js";
+ import {
+   maybeSummarize,
+@@ -42,6 +43,30 @@ export async function startRepl(config: AskGptConfig): Promise<void> {
+     }
+   };
+ 
++  // What /argue needs: the conversation, and a stateless one-shot call
++  const argueHost: ArgueHost = {
++    getMessages: () => context,
++    oneShot: async (prompt) => {
++      const messages: any[] = [{ role: "user", content: prompt }];
++      const rm = new ReasoningManager(false, config.model);
++      const signal = new AbortController().signal;
++
++      if (config.provider === "custom") {
++        return executeCustomApi(config, messages, "", rm, () => {}, signal);
++      }
++      return streamChatResponse({
++        config,
++        messages,
++        systemPrompt: "", // no persona, no constitution
++        abortSignal: signal,
++        reasoningManager: rm,
++        enableTools: false, // no tools
++        toolRecords: [],
++        onContentChunk: () => {}
++      });
++    }
++  };
++
+   const handleSlashCommand = async (cmd: string): Promise<boolean> => {
+     const trimmed = cmd.trim();
+ 
+@@ -53,6 +78,7 @@ export async function startRepl(config: AskGptConfig): Promise<void> {
+       console.log(`  ${chalk.cyan("/edit mcp")}                   Add, change or remove MCP servers`);
+       console.log(`  ${chalk.cyan("/edit system")}                Edit the system prompt in your text editor and reload it`);
+       console.log(`  ${chalk.cyan("/system global|local")}       Prefer ~/.terrible-harness/.system.txt or the local .system.txt`);
++      console.log(`  ${chalk.cyan('/argue "text"')}              Dispute the last answer; your reply is expanded into a full argument first`);
+       return true;
+     }
+ 
+@@ -60,11 +86,15 @@ export async function startRepl(config: AskGptConfig): Promise<void> {
+   };
+ 
+   const handleLine = async (line: string): Promise<void> => {
+-    const input = line.trim();
++    let input = line.trim();
+ 
+     if (!input) return;
+ 
+-    if (input.startsWith("/")) {
++    if (input === "/argue" || input.startsWith("/argue ")) {
++      const expanded = await runArgue(input.slice(6), argueHost);
++      if (!expanded) return;
++      input = expanded; // continues as a normal user message
++    } else if (input.startsWith("/")) {
+       const handled = await handleSlashCommand(input);
+       if (handled) return;
+     }
