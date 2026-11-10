@@ -1,9 +1,9 @@
 diff --git a/src/argue.ts b/src/argue.ts
 new file mode 100644
-index 0000000..4204834
+index 0000000..5d50f6d
 --- /dev/null
 +++ b/src/argue.ts
-@@ -0,0 +1,84 @@
+@@ -0,0 +1,95 @@
 +// src/argue.ts
 +// The /argue command of the REPL:
 +//   /argue <your defense>   Dispute the assistant's last answer. Your short
@@ -18,6 +18,8 @@ index 0000000..4204834
 +  getMessages(): { role: string; content: any }[];
 +  /** One stateless call: no history, no tools, no system prompt. Returns the text. */
 +  oneShot(prompt: string): Promise<string>;
++  /** Optional: names of the tools the main model can use (lets the expander point at a different one). */
++  getToolNames?(): Promise<string[]>;
 +}
 +
 +/** Plain text of a message; tool-call / tool-result parts are ignored. */
@@ -46,13 +48,21 @@ index 0000000..4204834
 +  return null;
 +}
 +
-+export function buildArguePrompt(question: string, answer: string, argument: string): string {
++export function buildArguePrompt(
++  question: string,
++  answer: string,
++  argument: string,
++  tools: string[] = []
++): string {
 +  return (
 +    `This is the initial question the user said: ${question}\n\n` +
 +    `The assistant said: ${answer}\n\n` +
 +    `The user wants to argue that: ${argument}\n\n` +
 +    `Expand this argument to make sure the assistant knows what the user is implying. ` +
-+    `If the assistant's answer rested on a failed search or lookup, point out that finding nothing is not proof something doesn't exist, and tell it to try a different method than the one it already used. ` +
++    `If the assistant's answer rested on a failed search or lookup, point out that finding nothing is not proof something doesn't exist. ` +
++    (tools.length
++      ? `The assistant has these tools: ${tools.join(", ")}. Tell it to try a different tool from this list instead of repeating the one it already used. `
++      : `Tell it to try a different method than the one it already used. `) +
 +    `Do not add facts the user did not state or imply. ` +
 +    `Only return the expanded response; don't use any personality traits.`
 +  );
@@ -75,7 +85,8 @@ index 0000000..4204834
 +
 +  try {
 +    console.log(chalk.gray("Expanding your argument..."));
-+    const expanded = (await host.oneShot(buildArguePrompt(last.question, last.answer, argument))).trim();
++    const tools = host.getToolNames ? await host.getToolNames().catch(() => [] as string[]) : [];
++    const expanded = (await host.oneShot(buildArguePrompt(last.question, last.answer, argument, tools))).trim();
 +    if (!expanded) {
 +      console.log(chalk.yellow("The expander returned nothing; sending your text as-is."));
 +      return argument;
@@ -89,7 +100,7 @@ index 0000000..4204834
 +  }
 +}
 diff --git a/src/repl.ts b/src/repl.ts
-index 30b041e..b51dd28 100644
+index 30b041e..9bd3876 100644
 --- a/src/repl.ts
 +++ b/src/repl.ts
 @@ -19,6 +19,7 @@ import { executeCustomApi } from "./providers/custom.js";
@@ -100,13 +111,21 @@ index 30b041e..b51dd28 100644
  import { createInterrupt, isAbortError } from "./Guards.js";
  import {
    maybeSummarize,
-@@ -42,6 +43,30 @@ export async function startRepl(config: AskGptConfig): Promise<void> {
+@@ -42,6 +43,38 @@ export async function startRepl(config: AskGptConfig): Promise<void> {
      }
    };
  
 +  // What /argue needs: the conversation, and a stateless one-shot call
 +  const argueHost: ArgueHost = {
 +    getMessages: () => context,
++    getToolNames: async () =>
++      Object.keys(
++        await getTools({
++          autoApprove: config.autoApproveTools,
++          provider: config.provider,
++          mcpServers: config.mcpServers
++        })
++      ),
 +    oneShot: async (prompt) => {
 +      const messages: any[] = [{ role: "user", content: prompt }];
 +      const rm = new ReasoningManager(false, config.model);
@@ -131,7 +150,7 @@ index 30b041e..b51dd28 100644
    const handleSlashCommand = async (cmd: string): Promise<boolean> => {
      const trimmed = cmd.trim();
  
-@@ -53,6 +78,7 @@ export async function startRepl(config: AskGptConfig): Promise<void> {
+@@ -53,6 +86,7 @@ export async function startRepl(config: AskGptConfig): Promise<void> {
        console.log(`  ${chalk.cyan("/edit mcp")}                   Add, change or remove MCP servers`);
        console.log(`  ${chalk.cyan("/edit system")}                Edit the system prompt in your text editor and reload it`);
        console.log(`  ${chalk.cyan("/system global|local")}       Prefer ~/.terrible-harness/.system.txt or the local .system.txt`);
@@ -139,7 +158,7 @@ index 30b041e..b51dd28 100644
        return true;
      }
  
-@@ -60,11 +86,15 @@ export async function startRepl(config: AskGptConfig): Promise<void> {
+@@ -60,11 +94,15 @@ export async function startRepl(config: AskGptConfig): Promise<void> {
    };
  
    const handleLine = async (line: string): Promise<void> => {

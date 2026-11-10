@@ -12,6 +12,8 @@ export interface ArgueHost {
   getMessages(): { role: string; content: any }[];
   /** One stateless call: no history, no tools, no system prompt. Returns the text. */
   oneShot(prompt: string): Promise<string>;
+  /** Optional: names of the tools the main model can use (lets the expander point at a different one). */
+  getToolNames?(): Promise<string[]>;
 }
 
 /** Plain text of a message; tool-call / tool-result parts are ignored. */
@@ -40,13 +42,21 @@ export function lastExchange(
   return null;
 }
 
-export function buildArguePrompt(question: string, answer: string, argument: string): string {
+export function buildArguePrompt(
+  question: string,
+  answer: string,
+  argument: string,
+  tools: string[] = []
+): string {
   return (
     `This is the initial question the user said: ${question}\n\n` +
     `The assistant said: ${answer}\n\n` +
     `The user wants to argue that: ${argument}\n\n` +
     `Expand this argument to make sure the assistant knows what the user is implying. ` +
-    `If the assistant's answer rested on a failed search or lookup, point out that finding nothing is not proof something doesn't exist, and tell it to try a different method than the one it already used. ` +
+    `If the assistant's answer rested on a failed search or lookup, point out that finding nothing is not proof something doesn't exist. ` +
+    (tools.length
+      ? `The assistant has these tools: ${tools.join(", ")}. Tell it to try a different tool from this list instead of repeating the one it already used. `
+      : `Tell it to try a different method than the one it already used. `) +
     `Do not add facts the user did not state or imply. ` +
     `Only return the expanded response; don't use any personality traits.`
   );
@@ -69,7 +79,8 @@ export async function runArgue(args: string, host: ArgueHost): Promise<string | 
 
   try {
     console.log(chalk.gray("Expanding your argument..."));
-    const expanded = (await host.oneShot(buildArguePrompt(last.question, last.answer, argument))).trim();
+    const tools = host.getToolNames ? await host.getToolNames().catch(() => [] as string[]) : [];
+    const expanded = (await host.oneShot(buildArguePrompt(last.question, last.answer, argument, tools))).trim();
     if (!expanded) {
       console.log(chalk.yellow("The expander returned nothing; sending your text as-is."));
       return argument;
