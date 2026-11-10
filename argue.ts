@@ -46,6 +46,7 @@ export function buildArguePrompt(question: string, answer: string, argument: str
     `The assistant said: ${answer}\n\n` +
     `The user wants to argue that: ${argument}\n\n` +
     `Expand this argument to make sure the assistant knows what the user is implying. ` +
+    `If the assistant's answer rested on a failed search or lookup, point out that finding nothing is not proof something doesn't exist, and tell it to try a different method than the one it already used. ` +
     `Do not add facts the user did not state or imply. ` +
     `Only return the expanded response; don't use any personality traits.`
   );

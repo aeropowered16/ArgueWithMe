@@ -1,9 +1,9 @@
 diff --git a/src/argue.ts b/src/argue.ts
 new file mode 100644
-index 0000000..e6a4da4
+index 0000000..4204834
 --- /dev/null
 +++ b/src/argue.ts
-@@ -0,0 +1,83 @@
+@@ -0,0 +1,84 @@
 +// src/argue.ts
 +// The /argue command of the REPL:
 +//   /argue <your defense>   Dispute the assistant's last answer. Your short
@@ -52,6 +52,7 @@ index 0000000..e6a4da4
 +    `The assistant said: ${answer}\n\n` +
 +    `The user wants to argue that: ${argument}\n\n` +
 +    `Expand this argument to make sure the assistant knows what the user is implying. ` +
++    `If the assistant's answer rested on a failed search or lookup, point out that finding nothing is not proof something doesn't exist, and tell it to try a different method than the one it already used. ` +
 +    `Do not add facts the user did not state or imply. ` +
 +    `Only return the expanded response; don't use any personality traits.`
 +  );
